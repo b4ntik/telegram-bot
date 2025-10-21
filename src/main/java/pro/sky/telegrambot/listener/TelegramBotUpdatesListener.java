@@ -12,7 +12,7 @@ import javax.annotation.PostConstruct;
 import java.util.List;
 
 @Service
-public class TelegramBotUpdatesListener implements UpdatesListener {
+public abstract class TelegramBotUpdatesListener implements UpdatesListener {
 
     private Logger logger = LoggerFactory.getLogger(TelegramBotUpdatesListener.class);
 
@@ -33,4 +33,5 @@ public class TelegramBotUpdatesListener implements UpdatesListener {
         return UpdatesListener.CONFIRMED_UPDATES_ALL;
     }
 
+    public abstract void onError(Throwable throwable);
 }
