@@ -1,0 +1,23 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-insert-initial-data
+      author: ilya_bannikov
+      changes:
+        - insert:
+            tableName: notification_task
+            columns:
+              - column:
+                  name: chat_id
+                  value: "123456789"
+              - column:
+                  name: message_text
+                  value: "Тестовое напоминание"
+              - column:
+                  name: scheduled_time
+                  value: "2024-12-31 23:59:59"
+              - column:
+                  name: created_at
+                  value: "2024-01-01 00:00:00"
+              - column:
+                  name: status
+                  value: "SCHEDULED"

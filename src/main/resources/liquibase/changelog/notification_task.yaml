@@ -1,0 +1,74 @@
+databaseChangeLog:
+  - changeSet:
+      id: notification_task
+      author: ilya_bannikov
+      changes:
+        - createTable:
+            tableName: notification_task
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: chat_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: message_text
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scheduled_time
+                  type: TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sent_at
+                  type: TIMESTAMP
+                  constraints:
+                    nullable: true
+              - column:
+                  name: status
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+                    default: "SCHEDULED"
+
+        - addDefaultValue:
+            tableName: notification_task
+            columnName: created_at
+            defaultValueComputed: CURRENT_TIMESTAMP
+
+        - createIndex:
+            tableName: notification_task
+            indexName: idx_notification_task_chat_id_status
+            columns:
+              - column:
+                  name: chat_id
+              - column:
+                  name: status
+
+        - createIndex:
+            tableName: notification_task
+            indexName: idx_notification_task_scheduled_time
+            columns:
+              - column:
+                  name: scheduled_time
+
+        - createIndex:
+            tableName: notification_task
+            indexName: idx_notification_task_status
+            columns:
+              - column:
+                  name: status
