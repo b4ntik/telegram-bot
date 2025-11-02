@@ -1,0 +1,29 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-add-not-null-constraints
+      author: ilya_bannikov
+      changes:
+        - addNotNullConstraint:
+            tableName: notification_task
+            columnName: chat_id
+            columnDataType: BIGINT
+
+        - addNotNullConstraint:
+            tableName: notification_task
+            columnName: message_text
+            columnDataType: TEXT
+
+        - addNotNullConstraint:
+            tableName: notification_task
+            columnName: scheduled_time
+            columnDataType: TIMESTAMP
+
+        - addNotNullConstraint:
+            tableName: notification_task
+            columnName: created_at
+            columnDataType: TIMESTAMP
+
+        - addNotNullConstraint:
+            tableName: notification_task
+            columnName: status
+            columnDataType: VARCHAR(20)
