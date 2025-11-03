@@ -1,5 +1,0 @@
-databaseChangeLog:
-  - includeAll:
-      path: liquibase/changelog/
-  - include:
-      file: liquibase/changelog/initial-data.yaml
