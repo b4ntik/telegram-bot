@@ -5,17 +5,21 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import pro.sky.telegrambot.model.NotificationTask;
+import pro.sky.telegrambot.model.User;
 import pro.sky.telegrambot.repository.NotificationTaskRepository;
 
-import java.time.LocalDateTime;
+
+import java.time.*;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.regex.Pattern;
 
 @Service
 public class NotificationProcessingService {
     private static final Logger logger = LoggerFactory.getLogger(NotificationProcessingService.class);
-
+    private String userTimeZone;
+    private LocalDateTime scheduledTimeUTC;
     @Autowired
     private NotificationTaskRepository notificationTaskRepository;
 
@@ -24,6 +28,9 @@ public class NotificationProcessingService {
 
     @Autowired
     private TelegramBotService telegramBotService;
+
+   // @Autowired
+    private UserService userService;
 
     private final static Pattern PATTERN = Pattern.compile(
             "(\\d{2}\\.\\d{2}\\.\\d{4}\\s\\d{2}:\\d{2})(\\s+)(.+)"
@@ -35,6 +42,9 @@ public class NotificationProcessingService {
 
     public void handlePatternMessage(Long chatId, String messageText) {
         try {
+            // Создаем или находим пользователя
+            User user = userService.findOrCreateUser(chatId, userTimeZone);
+
             String[] parts = messageText.split("\\s+", 3);
             if (parts.length < 3) {
                 telegramBotService.sendMessage(chatId, "❌ Неправильный формат. Используйте: ДД.ММ.ГГГГ ЧЧ:MM Текст");
@@ -44,23 +54,34 @@ public class NotificationProcessingService {
             String dateTimeStr = parts[0] + " " + parts[1];
             String text = parts[2];
 
-            LocalDateTime scheduledTime = parseDateTime(dateTimeStr);
+            // Получаем часовой пояс пользователя
+            String userTimeZone = user.getTimeZone();
 
-            if (scheduledTime.isBefore(LocalDateTime.now())) {
+            // Парсим время в часовом поясе пользователя
+            LocalDateTime scheduledTimeInUserTZ = parseDateTime(dateTimeStr, userTimeZone);
+
+            // Конвертируем в UTC для хранения в БД
+            LocalDateTime scheduledTimeUTC = convertToUTC(scheduledTimeInUserTZ, userTimeZone);
+
+            if (scheduledTimeUTC.isBefore(LocalDateTime.now(ZoneOffset.UTC))) {
                 telegramBotService.sendMessage(chatId, "❌ Ошибка: указанное время уже прошло.");
                 return;
             }
 
-            //сохраняем в репозиторий
-            NotificationTask scheduledMessage = new NotificationTask(chatId, text, scheduledTime);
+            // Сохраняем в репозиторий с часовым поясом
+            NotificationTask scheduledMessage = new NotificationTask(chatId, text, scheduledTimeUTC, userTimeZone);
             NotificationTask savedMessage = notificationTaskRepository.save(scheduledMessage);
 
-            //планируем отправку
+            // Планируем отправку
             notificationTaskSchedulerService.scheduleMessage(savedMessage);
 
-            telegramBotService.sendMessage(chatId, "✅ Уведомление запланировано на: " + dateTimeStr +
+            // Отображаем время в часовом поясе пользователя
+            String displayTime = formatDateTimeForUser(scheduledTimeInUserTZ, userTimeZone);
+
+            telegramBotService.sendMessage(chatId, "✅ Уведомление запланировано на: " + displayTime +
                     "\nТекст: " + text +
-                    "\nID: " + savedMessage.getId());
+                    "\nID: " + savedMessage.getId() +
+                    "\nЧасовой пояс: " + userTimeZone);
         } catch (Exception e) {
             logger.error("Ошибка при обработке сообщения с паттерном", e);
             telegramBotService.sendMessage(chatId, "❌ Ошибка при обработке сообщения. Проверьте формат: ДД.ММ.ГГГГ ЧЧ:MM Текст");
@@ -92,7 +113,8 @@ public class NotificationProcessingService {
             }
 
             //сохраняем в репозиторий
-            NotificationTask scheduledMessage = new NotificationTask(chatId, text, scheduledTime);
+
+            NotificationTask scheduledMessage = new NotificationTask(chatId, text, scheduledTimeUTC, userTimeZone);
             NotificationTask savedMessage = notificationTaskRepository.save(scheduledMessage);
 
             //планируем отправку
@@ -158,5 +180,67 @@ public class NotificationProcessingService {
     private LocalDateTime parseDateTime(String dateTimeStr) {
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
         return LocalDateTime.parse(dateTimeStr, formatter);
+    }
+    private String getUserTimeZone(Long chatId) {
+        // Здесь можно реализовать логику определения часового пояса
+        // 1. Хранить в базе данных для каждого пользователя
+        // 2. Запрашивать у пользователя
+        // 3. Использовать геолокацию (если доступно)
+        // 4. Использовать часовой пояс по умолчанию
+
+        // Временное решение - Europe/Moscow как пример
+        return "Europe/Moscow";
+    }
+    private LocalDateTime parseDateTime(String dateTimeStr, String timeZone) {
+        try {
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+            LocalDateTime localDateTime = LocalDateTime.parse(dateTimeStr, formatter);
+
+            // Создаем ZonedDateTime в часовом поясе пользователя
+            ZonedDateTime zonedDateTime = localDateTime.atZone(ZoneId.of(timeZone));
+
+            return zonedDateTime.toLocalDateTime();
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException("Неверный формат даты и времени");
+        }
+    }
+
+    private LocalDateTime convertToUTC(LocalDateTime userTime, String userTimeZone) {
+        ZonedDateTime zonedUserTime = userTime.atZone(ZoneId.of(userTimeZone));
+        ZonedDateTime utcTime = zonedUserTime.withZoneSameInstant(ZoneOffset.UTC);
+        return utcTime.toLocalDateTime();
+    }
+
+    private LocalDateTime convertFromUTC(LocalDateTime utcTime, String targetTimeZone) {
+        ZonedDateTime zonedUtcTime = utcTime.atZone(ZoneOffset.UTC);
+        ZonedDateTime targetTime = zonedUtcTime.withZoneSameInstant(ZoneId.of(targetTimeZone));
+        return targetTime.toLocalDateTime();
+    }
+
+    private String formatDateTimeForUser(LocalDateTime dateTime, String timeZone) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+        ZonedDateTime zonedDateTime = dateTime.atZone(ZoneId.of(timeZone));
+        return zonedDateTime.format(formatter) + " (" + timeZone + ")";
+    }
+    public void handleTimeZoneCommand(Long chatId, String timeZoneStr) {
+        try {
+            // Валидируем часовой пояс
+            ZoneId.of(timeZoneStr);
+
+            // Сохраняем часовой пояс пользователя
+            userService.saveUserTimeZone(chatId, timeZoneStr);
+
+            telegramBotService.sendMessage(chatId,
+                    "✅ Часовой пояс установлен: " + timeZoneStr +
+                            "\nТеперь все уведомления будут учитывать ваш часовой пояс.");
+
+        } catch (DateTimeException e) {
+            telegramBotService.sendMessage(chatId,
+                    "❌ Неверный часовой пояс. Примеры правильных форматов:\n" +
+                            "• Europe/Moscow\n" +
+                            "• Asia/Vladivostok\n" +
+                            "• Europe/London\n" +
+                            "• America/New_York");
+        }
     }
 }

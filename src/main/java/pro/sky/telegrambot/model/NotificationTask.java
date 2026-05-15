@@ -2,6 +2,8 @@ package pro.sky.telegrambot.model;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 
 @Entity
 @Table(name = "notification_task")
@@ -28,15 +30,20 @@ public class NotificationTask {
     @Column(name = "status", nullable = false, length = 20)
     private String status = "SCHEDULED"; // SCHEDULED, SENT, ERROR
 
+    @Column(name = "time_zone", length = 50)
+    // Добавляем поле для хранения часового пояса
+    private String timeZone;
+
     //конструкторы
     public NotificationTask() {}
 
-    public NotificationTask(Long chatId, String messageText, LocalDateTime scheduledTime) {
+    public NotificationTask(Long chatId, String messageText, LocalDateTime scheduledTime, String timeZone) {
         this.chatId = chatId;
         this.messageText = messageText;
         this.scheduledTime = scheduledTime;
         this.createdAt = LocalDateTime.now();
         this.status = "SCHEDULED";
+        this.timeZone = timeZone;
     }
 
     //геттеры и сеттеры
@@ -60,4 +67,17 @@ public class NotificationTask {
 
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+
+    public String getTimeZone() {
+        return timeZone;
+    }
+
+    public void setTimeZone(String timeZone) {
+        this.timeZone = timeZone;
+    }
+
+    // Геттер для получения времени с учетом часового пояса
+    public ZonedDateTime getScheduledTimeWithTimeZone() {
+        return scheduledTime.atZone(ZoneId.of(timeZone));
+    }
 }

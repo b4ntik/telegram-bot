@@ -26,14 +26,6 @@ public class TelegramBotService {
         logger.info("Telegram bot initialized with token: {}", botToken.substring(0, 10) + "...");
     }
 
-    /*@PreDestroy
-    public void destroy() {
-        if (bot != null) {
-            bot.shutdown();
-            logger.info("Telegram bot shutdown");
-        }
-    }*/
-
     //отправка сообщения
     public boolean sendMessage(Long chatId, String text) {
         return sendMessage(chatId.toString(), text);
