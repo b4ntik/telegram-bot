@@ -2,245 +2,219 @@ package pro.sky.telegrambot.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import pro.sky.telegrambot.model.NotificationTask;
-import pro.sky.telegrambot.model.User;
 import pro.sky.telegrambot.repository.NotificationTaskRepository;
 
-
-import java.time.*;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
-import java.util.List;
-import java.util.regex.Pattern;
 
 @Service
 public class NotificationProcessingService {
     private static final Logger logger = LoggerFactory.getLogger(NotificationProcessingService.class);
-    private String userTimeZone;
-    private LocalDateTime scheduledTimeUTC;
-    @Autowired
-    private NotificationTaskRepository notificationTaskRepository;
 
-    @Autowired
-    private NotificationTaskSchedulerService notificationTaskSchedulerService;
+    private final NotificationTaskRepository repository;
+    private final UserService userService;
 
-    @Autowired
-    private TelegramBotService telegramBotService;
-
-   // @Autowired
-    private UserService userService;
-
-    private final static Pattern PATTERN = Pattern.compile(
-            "(\\d{2}\\.\\d{2}\\.\\d{4}\\s\\d{2}:\\d{2})(\\s+)(.+)"
-    );
-
-    public boolean checkMessageContainPattern(String s) {
-        return PATTERN.matcher(s).matches();
+    public NotificationProcessingService(NotificationTaskRepository repository,
+                                         UserService userService) {
+        this.repository = repository;
+        this.userService = userService;
     }
 
-    public void handlePatternMessage(Long chatId, String messageText) {
-        try {
-            // Создаем или находим пользователя
-            User user = userService.findOrCreateUser(chatId, userTimeZone);
+    /**
+     * Обрабатывает сообщение от пользователя
+     * @param messageText текст сообщения
+     * @param chatId идентификатор чата
+     * @param timeZone часовой пояс пользователя
+     * @return текст ответа для отправки пользователю
+     */
+    public String processMessage(String messageText, Long chatId, String timeZone) {
+        logger.info("Processing message: '{}' from chat: {} with timezone: {}",
+                messageText, chatId, timeZone);
 
-            String[] parts = messageText.split("\\s+", 3);
-            if (parts.length < 3) {
-                telegramBotService.sendMessage(chatId, "❌ Неправильный формат. Используйте: ДД.ММ.ГГГГ ЧЧ:MM Текст");
-                return;
+        if (messageText == null || messageText.trim().isEmpty()) {
+            return getHelpMessage();
+        }
+
+        // Проверяем, что это команда
+        if (messageText.startsWith("/")) {
+            return handleCommand(messageText, chatId, timeZone);
+        }
+
+        // Пробуем распарсить как напоминание
+        return parseAndCreateNotification(messageText, chatId, timeZone);
+    }
+
+    private String handleCommand(String command, Long chatId, String timeZone) {
+        switch (command.toLowerCase()) {
+            case "/start":
+                return "👋 Привет! Я бот-напоминатор.\n\n" +
+                        "Ваш часовой пояс: " + timeZone + "\n\n" +
+                        "Отправь мне сообщение в формате:\n" +
+                        "📅 ДД.ММ.ГГГГ ЧЧ:MM Текст напоминания\n\n" +
+                        "Пример: 20.05.2026 14:30 Позвонить маме\n\n" +
+                        "Или просто:\n" +
+                        "20.05.2026 Позвонить маме (напомню в 00:00)";
+            case "/help":
+                return getHelpMessage();
+            default:
+                return "Неизвестная команда. Используйте /help для списка команд.";
+        }
+    }
+
+    private String getHelpMessage() {
+        return "📝 Как пользоваться ботом:\n\n" +
+                "1️⃣ С датой и временем:\n" +
+                "   20.05.2026 14:30 Купить молоко\n\n" +
+                "2️⃣ Только с датой (напомню в 00:00):\n" +
+                "   20.05.2026 Купить молоко\n\n" +
+                "3️⃣ Команды:\n" +
+                "   /start - начать работу\n" +
+                "   /help - эта справка\n" +
+                "   /timezone - узнать текущий часовой пояс\n" +
+                "   /settimezone - изменить часовой пояс";
+    }
+
+    /**
+     * Парсит сообщение и создает напоминание
+     */
+    private String parseAndCreateNotification(String messageText, Long chatId, String timeZone) {
+        try {
+            logger.info("=== DEBUG: parseAndCreateNotification ===");
+            logger.info("Message: {}, ChatId: {}, TimeZone: {}", messageText, chatId, timeZone);
+            // Разбиваем сообщение на части
+            String[] parts = messageText.split(" ", 3);
+
+            if (parts.length < 2) {
+                return "❌ Неверный формат!\n" + getHelpMessage();
             }
 
-            String dateTimeStr = parts[0] + " " + parts[1];
-            String text = parts[2];
+            String datePart = parts[0]; // ДД.ММ.ГГГГ
+            String timePart = null;
+            String notificationText;
 
-            // Получаем часовой пояс пользователя
-            String userTimeZone = user.getTimeZone();
+            // Проверяем, указано ли время
+            if (parts.length >= 2 && parts[1].contains(":")) {
+                timePart = parts[1];
+                notificationText = parts[2];
+            } else {
+                // Время не указано, используем 00:00
+                timePart = "00:00";
+                notificationText = parts[1];
+            }
 
-            // Парсим время в часовом поясе пользователя
-            LocalDateTime scheduledTimeInUserTZ = parseDateTime(dateTimeStr, userTimeZone);
+            // Парсим дату и время, которые ввел пользователь (в его часовом поясе)
+            LocalDateTime userLocalTime = parseUserDateTime(datePart, timePart);
+            logger.info("User entered time: {} ({})", userLocalTime, timeZone);
+            if (userLocalTime == null) {
+                return "❌ Не удалось распознать дату и время.\n\n" +
+                        "Используйте формат: ДД.ММ.ГГГГ ЧЧ:MM Текст\n" +
+                        "Например: 20.05.2026 14:30 Позвонить маме";
+            }
+            logger.info("User local time: {}", userLocalTime);
+            logger.info("User time zone: {}", timeZone);
 
+            ZonedDateTime nowInUserZone = ZonedDateTime.now(ZoneId.of(timeZone));
+            logger.info("Current time in user zone: {}",
+                    nowInUserZone.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+            LocalDateTime currentUserTime = nowInUserZone.toLocalDateTime();
+
+            logger.info("User local time (scheduled): {}", userLocalTime);
+            logger.info("Current time (user zone): {}", currentUserTime);
+
+
+
+            logger.info("Scheduled time UTC: {}", userLocalTime);
+            logger.info("Current time UTC: {}", currentUserTime);
+            logger.info("Time difference (seconds): {}",
+                    java.time.Duration.between(currentUserTime, userLocalTime).getSeconds());
+
+            logger.info("User time: {} ({}) -> UTC time: {}", userLocalTime, timeZone, userLocalTime);
+
+            // Проверяем, что время не в прошлом
+            if (userLocalTime.isBefore(currentUserTime)) {
+                logger.warn("Time is in the past! User time: {} ({}) -> UTC: {}, Now UTC: {}",
+                        userLocalTime, timeZone, userLocalTime, currentUserTime);
+                return "❌ Нельзя создать напоминание на прошедшее время!\n" +
+                        "Укажите будущую дату и время.\n\n" +
+                        "Ваше время: " + userLocalTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) + " (" + timeZone + ")\n" +
+                        "Текущее время: " + currentUserTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) + " (" + timeZone + ")";
+            }
+            if (Math.abs(java.time.Duration.between(currentUserTime, userLocalTime).getSeconds()) < 60) {
+                logger.info("Time is now or within next minute, allowing");
+            }
             // Конвертируем в UTC для хранения в БД
-            LocalDateTime scheduledTimeUTC = convertToUTC(scheduledTimeInUserTZ, userTimeZone);
+            LocalDateTime scheduledTimeUTC = convertToUTC(userLocalTime, timeZone);
+            LocalDateTime nowUTC = LocalDateTime.now();
 
-            if (scheduledTimeUTC.isBefore(LocalDateTime.now(ZoneOffset.UTC))) {
-                telegramBotService.sendMessage(chatId, "❌ Ошибка: указанное время уже прошло.");
-                return;
-            }
+            // Создаем и сохраняем задачу
+            NotificationTask task = createAndSaveTask(chatId, notificationText, scheduledTimeUTC, timeZone);
 
-            // Сохраняем в репозиторий с часовым поясом
-            NotificationTask scheduledMessage = new NotificationTask(chatId, text, scheduledTimeUTC, userTimeZone);
-            NotificationTask savedMessage = notificationTaskRepository.save(scheduledMessage);
+            // Форматируем ответ для пользователя (показываем в его часовом поясе)
+            String formattedTime = userLocalTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
+            return String.format("✅ Напоминание сохранено!\n" +
+                            "📅 Когда: %s (по вашему часовому поясу)\n" +
+                            "📝 Текст: %s\n" +
+                            "🆔 ID задачи: %d",
+                    formattedTime, notificationText, task.getId());
 
-            // Планируем отправку
-            notificationTaskSchedulerService.scheduleMessage(savedMessage);
-
-            // Отображаем время в часовом поясе пользователя
-            String displayTime = formatDateTimeForUser(scheduledTimeInUserTZ, userTimeZone);
-
-            telegramBotService.sendMessage(chatId, "✅ Уведомление запланировано на: " + displayTime +
-                    "\nТекст: " + text +
-                    "\nID: " + savedMessage.getId() +
-                    "\nЧасовой пояс: " + userTimeZone);
-        } catch (Exception e) {
-            logger.error("Ошибка при обработке сообщения с паттерном", e);
-            telegramBotService.sendMessage(chatId, "❌ Ошибка при обработке сообщения. Проверьте формат: ДД.ММ.ГГГГ ЧЧ:MM Текст");
-        }
-    }
-
-    public void handleScheduleCommand(Long chatId, String messageText) {
-        String[] parts = messageText.split(" ", 4);
-        if (parts.length < 4) {
-            telegramBotService.sendMessage(chatId, "❌ Неправильный формат команды. Используйте:\n/schedule ДД.ММ.ГГГГ ЧЧ:MM Текст_сообщения");
-            return;
-        }
-
-        try {
-            String dateTimeStr = parts[1] + " " + parts[2];
-            String text = parts[3];
-
-            //проверяем формат даты
-            if (!dateTimeStr.matches("\\d{2}\\.\\d{2}\\.\\d{4}\\s\\d{2}:\\d{2}")) {
-                telegramBotService.sendMessage(chatId, "❌ Неправильный формат даты. Используйте: ДД.ММ.ГГГГ ЧЧ:MM");
-                return;
-            }
-
-            LocalDateTime scheduledTime = parseDateTime(dateTimeStr);
-
-            if (scheduledTime.isBefore(LocalDateTime.now())) {
-                telegramBotService.sendMessage(chatId, "❌ Ошибка: указанное время уже прошло.");
-                return;
-            }
-
-            //сохраняем в репозиторий
-
-            NotificationTask scheduledMessage = new NotificationTask(chatId, text, scheduledTimeUTC, userTimeZone);
-            NotificationTask savedMessage = notificationTaskRepository.save(scheduledMessage);
-
-            //планируем отправку
-            notificationTaskSchedulerService.scheduleMessage(savedMessage);
-
-            telegramBotService.sendMessage(chatId, "✅ Уведомление запланировано!\n" +
-                    "⏰ Время: " + dateTimeStr +
-                    "\n💬 Текст: " + text +
-                    "\n🆔 ID: " + savedMessage.getId());
-
-        } catch (Exception e) {
-            logger.error("Ошибка при обработке команды /schedule", e);
-            telegramBotService.sendMessage(chatId, "❌ Ошибка при планировании уведомления. Проверьте формат данных.");
-        }
-    }
-
-    public void handleListCommand(Long chatId) {
-        try {
-            List<NotificationTask> scheduledMessages = notificationTaskRepository
-                    .findByChatIdAndStatusOrderByScheduledTimeAsc(chatId, "SCHEDULED");
-
-            if (scheduledMessages.isEmpty()) {
-                telegramBotService.sendMessage(chatId, "📭 У вас нет запланированных уведомлений.");
-                return;
-            }
-
-            StringBuilder message = new StringBuilder("📋 Ваши запланированные уведомления:\n\n");
-
-            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
-            for (NotificationTask msg : scheduledMessages) {
-                message.append("🆔 ").append(msg.getId())
-                        .append("\n⏰ ").append(msg.getScheduledTime().format(formatter))
-                        .append("\n💬 ").append(msg.getMessageText())
-                        .append("\n\n");
-            }
-
-            telegramBotService.sendMessage(chatId, message.toString());
-        } catch (Exception e) {
-            logger.error("Ошибка при получении списка уведомлений", e);
-            telegramBotService.sendMessage(chatId, "❌ Ошибка при получении списка уведомлений.");
-        }
-    }
-
-    public void sendHelpMessage(Long chatId) {
-        String helpText = """
-            📋 Доступные команды:
-            
-            /start - Начать работу
-            /help - Показать эту справку
-            /list - Показать запланированные уведомления
-            
-            📝 Формат сообщений:
-            Просто отправьте сообщение в формате:
-            ДД.ММ.ГГГГ ЧЧ:MM Ваш_текст_уведомления
-            
-            Примеры:
-            25.12.2024 14:30 Поздравить с Новым годом
-            """;
-
-        telegramBotService.sendMessage(chatId, helpText);
-    }
-
-    private LocalDateTime parseDateTime(String dateTimeStr) {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
-        return LocalDateTime.parse(dateTimeStr, formatter);
-    }
-    private String getUserTimeZone(Long chatId) {
-        // Здесь можно реализовать логику определения часового пояса
-        // 1. Хранить в базе данных для каждого пользователя
-        // 2. Запрашивать у пользователя
-        // 3. Использовать геолокацию (если доступно)
-        // 4. Использовать часовой пояс по умолчанию
-
-        // Временное решение - Europe/Moscow как пример
-        return "Europe/Moscow";
-    }
-    private LocalDateTime parseDateTime(String dateTimeStr, String timeZone) {
-        try {
-            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
-            LocalDateTime localDateTime = LocalDateTime.parse(dateTimeStr, formatter);
-
-            // Создаем ZonedDateTime в часовом поясе пользователя
-            ZonedDateTime zonedDateTime = localDateTime.atZone(ZoneId.of(timeZone));
-
-            return zonedDateTime.toLocalDateTime();
         } catch (DateTimeParseException e) {
-            throw new IllegalArgumentException("Неверный формат даты и времени");
+            logger.error("Failed to parse date/time from message: {}", messageText, e);
+            return "❌ Не удалось распознать дату и время.\n\n" +
+                    "Используйте формат: ДД.ММ.ГГГГ ЧЧ:MM Текст\n" +
+                    "Например: 20.05.2026 14:30 Позвонить маме";
+        } catch (Exception e) {
+            logger.error("Error processing message: {}", messageText, e);
+            return "❌ Произошла ошибка при сохранении напоминания. Попробуйте еще раз.";
         }
     }
 
-    private LocalDateTime convertToUTC(LocalDateTime userTime, String userTimeZone) {
-        ZonedDateTime zonedUserTime = userTime.atZone(ZoneId.of(userTimeZone));
-        ZonedDateTime utcTime = zonedUserTime.withZoneSameInstant(ZoneOffset.UTC);
+    /**
+     * Парсит строки даты и времени в LocalDateTime
+     */
+    private LocalDateTime parseUserDateTime(String datePart, String timePart) {
+        try {
+            return LocalDateTime.parse(
+                    datePart + " " + timePart,
+                    DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+            );
+        } catch (DateTimeParseException e) {
+            logger.error("Failed to parse: {} {}", datePart, timePart, e);
+            return null;
+        }
+    }
+
+    /**
+     * Конвертирует локальное время пользователя в UTC
+     */
+    private LocalDateTime convertToUTC(LocalDateTime userLocalTime, String timeZone) {
+        // Важно: userLocalTime - это время, которое указал пользователь в своем часовом поясе
+        // Но без привязки к конкретной дате, LocalDateTime не знает о часовом поясе
+        // Поэтому мы создаем ZonedDateTime с указанием, что это время в часовом поясе пользователя
+        ZonedDateTime userZonedTime = ZonedDateTime.of(userLocalTime, ZoneId.of(timeZone));
+        ZonedDateTime utcTime = userZonedTime.withZoneSameInstant(ZoneId.of("UTC"));
         return utcTime.toLocalDateTime();
     }
 
-    private LocalDateTime convertFromUTC(LocalDateTime utcTime, String targetTimeZone) {
-        ZonedDateTime zonedUtcTime = utcTime.atZone(ZoneOffset.UTC);
-        ZonedDateTime targetTime = zonedUtcTime.withZoneSameInstant(ZoneId.of(targetTimeZone));
-        return targetTime.toLocalDateTime();
+    /**
+     * Создает и сохраняет задачу в БД
+     */
+    private NotificationTask createAndSaveTask(Long chatId, String messageText,
+                                               LocalDateTime scheduledTimeUTC, String timeZone) {
+        NotificationTask task = new NotificationTask(chatId, messageText, scheduledTimeUTC, timeZone);
+        return repository.save(task);
     }
 
-    private String formatDateTimeForUser(LocalDateTime dateTime, String timeZone) {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
-        ZonedDateTime zonedDateTime = dateTime.atZone(ZoneId.of(timeZone));
-        return zonedDateTime.format(formatter) + " (" + timeZone + ")";
-    }
-    public void handleTimeZoneCommand(Long chatId, String timeZoneStr) {
-        try {
-            // Валидируем часовой пояс
-            ZoneId.of(timeZoneStr);
-
-            // Сохраняем часовой пояс пользователя
-            userService.saveUserTimeZone(chatId, timeZoneStr);
-
-            telegramBotService.sendMessage(chatId,
-                    "✅ Часовой пояс установлен: " + timeZoneStr +
-                            "\nТеперь все уведомления будут учитывать ваш часовой пояс.");
-
-        } catch (DateTimeException e) {
-            telegramBotService.sendMessage(chatId,
-                    "❌ Неверный часовой пояс. Примеры правильных форматов:\n" +
-                            "• Europe/Moscow\n" +
-                            "• Asia/Vladivostok\n" +
-                            "• Europe/London\n" +
-                            "• America/New_York");
-        }
+    /**
+     * Конвертирует UTC время в локальное время пользователя (для отображения)
+     */
+    public LocalDateTime convertToUserTime(LocalDateTime utcTime, String timeZone) {
+        ZonedDateTime utcZoned = utcTime.atZone(ZoneId.of("UTC"));
+        ZonedDateTime userZoned = utcZoned.withZoneSameInstant(ZoneId.of(timeZone));
+        return userZoned.toLocalDateTime();
     }
 }
