@@ -11,12 +11,13 @@ import pro.sky.telegrambot.model.User;
 import pro.sky.telegrambot.repository.NotificationTaskRepository;
 import pro.sky.telegrambot.repository.UserRepository;
 
+
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.stream.Collectors;
+
 
 @Service
 public class NotificationTaskScheduler {
@@ -24,6 +25,9 @@ public class NotificationTaskScheduler {
 
     @Autowired
     private NotificationTaskRepository notificationRepository;
+
+    @Autowired
+    private NotificationProcessingService notificationService;
 
     @Autowired
     private UserRepository userRepository;
@@ -96,11 +100,56 @@ public class NotificationTaskScheduler {
                     logger.debug("Task {} not due yet. Wait until: {}",
                             task.getId(), taskTimeUserZone.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
                 }
+                if (task.getIsYearly()) {
+                    createNextYearReminder(task);
+                }
 
             } catch (Exception e) {
                 logger.error("Failed to process task: {}", task.getId(), e);
                 markTaskAsError(task);
             }
+        }
+    }
+    private void createNextYearReminder(NotificationTask oldTask) {
+        try {
+            // Получаем часовой пояс пользователя
+            User user = userRepository.findByChatId(oldTask.getChatId()).orElse(null);
+            if (user == null) return;
+
+            String timeZone = user.getTimeZone();
+            ZonedDateTime nowUserZone = ZonedDateTime.now(ZoneId.of(timeZone));
+            int nextYear = nowUserZone.getYear() + 1;
+
+            // Создаём дату на следующий год
+            LocalDateTime nextYearTime = LocalDateTime.of(
+                    nextYear,
+                    Integer.parseInt(oldTask.getYearlyMonth()),
+                    Integer.parseInt(oldTask.getYearlyDay()),
+                    Integer.parseInt(oldTask.getYearlyTime().split(":")[0]),
+                    Integer.parseInt(oldTask.getYearlyTime().split(":")[1])
+            );
+
+            // Конвертируем в UTC
+            LocalDateTime nextYearUTC = notificationService.convertToUTC(nextYearTime, timeZone);
+
+            // Создаём новую задачу
+            NotificationTask newTask = new NotificationTask();
+            newTask.setChatId(oldTask.getChatId());
+            newTask.setMessageText(oldTask.getMessageText());
+            newTask.setScheduledTime(nextYearUTC);
+            newTask.setTimeZone(timeZone);
+            newTask.setIsYearly(true);
+            newTask.setYearlyDay(oldTask.getYearlyDay());
+            newTask.setYearlyMonth(oldTask.getYearlyMonth());
+            newTask.setYearlyTime(oldTask.getYearlyTime());
+            newTask.setStatus("SCHEDULED");
+            newTask.setCreatedAt(LocalDateTime.now());
+
+            notificationRepository.save(newTask);
+            logger.info("Created next year reminder for task {}", oldTask.getId());
+
+        } catch (Exception e) {
+            logger.error("Failed to create next year reminder", e);
         }
     }
 

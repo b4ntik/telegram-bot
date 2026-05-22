@@ -33,6 +33,17 @@ public class NotificationTask {
     @Column(name = "time_zone", length = 50)
     // Добавляем поле для хранения часового пояса
     private String timeZone;
+    @Column(name = "is_yearly")
+    private boolean isYearly = false;
+
+    @Column(name = "yearly_day")
+    private String yearlyDay;  // день месяца (01-31)
+
+    @Column(name = "yearly_month")
+    private String yearlyMonth;  // месяц (01-12)
+
+    @Column(name = "yearly_time")
+    private String yearlyTime;  // время в формате HH:mm
 
     //конструкторы
     public NotificationTask() {}
@@ -80,4 +91,17 @@ public class NotificationTask {
     public ZonedDateTime getScheduledTimeWithTimeZone() {
         return scheduledTime.atZone(ZoneId.of(timeZone));
     }
+
+    // Геттеры и сеттеры
+    public boolean getIsYearly() { return isYearly; }
+    public void setIsYearly(boolean isYearly) { this.isYearly = isYearly; }
+
+    public String getYearlyDay() { return yearlyDay; }
+    public void setYearlyDay(String yearlyDay) { this.yearlyDay = yearlyDay; }
+
+    public String getYearlyMonth() { return yearlyMonth; }
+    public void setYearlyMonth(String yearlyMonth) { this.yearlyMonth = yearlyMonth; }
+
+    public String getYearlyTime() { return yearlyTime; }
+    public void setYearlyTime(String yearlyTime) { this.yearlyTime = yearlyTime; }
 }

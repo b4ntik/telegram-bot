@@ -27,4 +27,6 @@ public interface NotificationTaskRepository extends JpaRepository<NotificationTa
     // Поиск всех задач, которые нужно отправить в ближайшие N минут
     @Query("SELECT t FROM NotificationTask t WHERE t.status = 'SCHEDULED' AND t.scheduledTime <= :now")
    List<NotificationTask> findByStatusAndScheduledTimeBefore(@Param("now") LocalDateTime now);
+
+    List<NotificationTask> findByChatIdAndStatus(Long chatId, String status);
 }

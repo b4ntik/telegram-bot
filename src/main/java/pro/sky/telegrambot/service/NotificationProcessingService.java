@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import pro.sky.telegrambot.model.NotificationTask;
+import pro.sky.telegrambot.model.User;
 import pro.sky.telegrambot.repository.NotificationTaskRepository;
 
 import java.time.LocalDateTime;
@@ -11,6 +12,8 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.List;
+import java.util.Optional;
 
 @Service
 public class NotificationProcessingService {
@@ -68,15 +71,18 @@ public class NotificationProcessingService {
 
     private String getHelpMessage() {
         return "📝 Как пользоваться ботом:\n\n" +
-                "1️⃣ С датой и временем:\n" +
+                "1️⃣ Однократное напоминание:\n" +
                 "   20.05.2026 14:30 Купить молоко\n\n" +
-                "2️⃣ Только с датой (напомню в 00:00):\n" +
-                "   20.05.2026 Купить молоко\n\n" +
-                "3️⃣ Команды:\n" +
-                "   /start - начать работу\n" +
-                "   /help - эта справка\n" +
-                "   /timezone - узнать текущий часовой пояс\n" +
-                "   /settimezone - изменить часовой пояс";
+                "2️⃣ Ежегодное напоминание (в 09:00):\n" +
+                "   20.05 День рождения мамы\n\n" +
+                "3️⃣ Ежегодное в указанное время:\n" +
+                "   20.05 14:30 Позвонить маме\n\n" +
+                "📌 Команды:\n" +
+                "/start - начать работу\n" +
+                "/help - эта справка\n" +
+                "/timezone - узнать часовой пояс\n" +
+                "/settimezone - изменить часовой пояс\n" +
+                "/myprofile - информация о профиле";
     }
 
     /**
@@ -84,95 +90,133 @@ public class NotificationProcessingService {
      */
     private String parseAndCreateNotification(String messageText, Long chatId, String timeZone) {
         try {
-            logger.info("=== DEBUG: parseAndCreateNotification ===");
-            logger.info("Message: {}, ChatId: {}, TimeZone: {}", messageText, chatId, timeZone);
-            // Разбиваем сообщение на части
+            logger.info("=== CREATING NOTIFICATION ===");
+            logger.info("Message: {}, TimeZone: {}", messageText, timeZone);
+
             String[] parts = messageText.split(" ", 3);
 
             if (parts.length < 2) {
                 return "❌ Неверный формат!\n" + getHelpMessage();
             }
 
-            String datePart = parts[0]; // ДД.ММ.ГГГГ
+            String datePart = parts[0];
             String timePart = null;
             String notificationText;
+            boolean isYearly = false;
+            String[] dayMonth = null;
 
-            // Проверяем, указано ли время
-            if (parts.length >= 2 && parts[1].contains(":")) {
-                timePart = parts[1];
-                notificationText = parts[2];
+            // Проверяем, что это не полная дата с годом (ДД.ММ.ГГГГ)
+            boolean hasYear = datePart.matches("\\d{2}\\.\\d{2}\\.\\d{4}");
+            boolean isDayMonth = datePart.matches("\\d{2}\\.\\d{2}") && !hasYear;
+
+            if (isDayMonth) {
+                // Формат: ДД.ММ ТЕКСТ или ДД.ММ ЧЧ:MM ТЕКСТ
+                isYearly = true;
+
+                if (parts.length >= 2 && parts[1].contains(":")) {
+                    // Есть время: ДД.ММ ЧЧ:MM ТЕКСТ
+                    timePart = parts[1];
+                    notificationText = parts[2];
+                } else {
+                    // Без времени: ДД.ММ ТЕКСТ
+                    timePart = "09:00";  // По умолчанию 09:00
+                    notificationText = parts[1];
+                }
+            } else if (hasYear) {
+                // Формат с годом: ДД.ММ.ГГГГ (обработка существующая)
+                if (parts.length >= 2 && parts[1].contains(":")) {
+                    timePart = parts[1];
+                    notificationText = parts[2];
+                } else {
+                    timePart = "00:00";
+                    notificationText = parts[1];
+                }
             } else {
-                // Время не указано, используем 00:00
-                timePart = "00:00";
-                notificationText = parts[1];
+                return "❌ Неверный формат даты.\n\n" +
+                        "Используйте:\n" +
+                        "• 20.05.2026 14:30 Текст (однократное)\n" +
+                        "• 20.05 Текст (ежегодное в 09:00)\n" +
+                        "• 20.05 14:30 Текст (ежегодное в указанное время)";
             }
 
-            // Парсим дату и время, которые ввел пользователь (в его часовом поясе)
-            LocalDateTime userLocalTime = parseUserDateTime(datePart, timePart);
-            logger.info("User entered time: {} ({})", userLocalTime, timeZone);
+            // Текущая дата в часовом поясе пользователя
+            ZonedDateTime nowInUserZone = ZonedDateTime.now(ZoneId.of(timeZone));
+            int currentYear = nowInUserZone.getYear();
+
+            LocalDateTime userLocalTime;
+
+            if (isYearly) {
+                // Парсим только день и месяц, год берем текущий
+                dayMonth = datePart.split("\\.");
+                int day = Integer.parseInt(dayMonth[0]);
+                int month = Integer.parseInt(dayMonth[1]);
+
+                userLocalTime = LocalDateTime.of(
+                        currentYear, month, day,
+                        Integer.parseInt(timePart.split(":")[0]),
+                        Integer.parseInt(timePart.split(":")[1])
+                );
+
+                // Если дата уже прошла в этом году, переносим на следующий год
+                if (userLocalTime.isBefore(nowInUserZone.toLocalDateTime())) {
+                    userLocalTime = userLocalTime.plusYears(1);
+                    logger.info("Yearly reminder moved to next year: {}", userLocalTime);
+                }
+            } else {
+                // Существующая логика для полной даты
+                userLocalTime = parseUserDateTime(datePart, timePart);
+            }
+
             if (userLocalTime == null) {
                 return "❌ Не удалось распознать дату и время.\n\n" +
                         "Используйте формат: ДД.ММ.ГГГГ ЧЧ:MM Текст\n" +
-                        "Например: 20.05.2026 14:30 Позвонить маме";
+                        "или: ДД.ММ Текст (ежегодно в 09:00)";
             }
-            logger.info("User local time: {}", userLocalTime);
-            logger.info("User time zone: {}", timeZone);
 
-            ZonedDateTime nowInUserZone = ZonedDateTime.now(ZoneId.of(timeZone));
-            logger.info("Current time in user zone: {}",
-                    nowInUserZone.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
-            LocalDateTime currentUserTime = nowInUserZone.toLocalDateTime();
+            logger.info("User local time: {} (yearly={})", userLocalTime, isYearly);
 
-            logger.info("User local time (scheduled): {}", userLocalTime);
-            logger.info("Current time (user zone): {}", currentUserTime);
-
-
-
-            logger.info("Scheduled time UTC: {}", userLocalTime);
-            logger.info("Current time UTC: {}", currentUserTime);
-            logger.info("Time difference (seconds): {}",
-                    java.time.Duration.between(currentUserTime, userLocalTime).getSeconds());
-
-            logger.info("User time: {} ({}) -> UTC time: {}", userLocalTime, timeZone, userLocalTime);
-
-            // Проверяем, что время не в прошлом
-            if (userLocalTime.isBefore(currentUserTime)) {
-                logger.warn("Time is in the past! User time: {} ({}) -> UTC: {}, Now UTC: {}",
-                        userLocalTime, timeZone, userLocalTime, currentUserTime);
-                return "❌ Нельзя создать напоминание на прошедшее время!\n" +
-                        "Укажите будущую дату и время.\n\n" +
-                        "Ваше время: " + userLocalTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) + " (" + timeZone + ")\n" +
-                        "Текущее время: " + currentUserTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) + " (" + timeZone + ")";
-            }
-            if (Math.abs(java.time.Duration.between(currentUserTime, userLocalTime).getSeconds()) < 60) {
-                logger.info("Time is now or within next minute, allowing");
-            }
-            // Конвертируем в UTC для хранения в БД
+            // Конвертируем в UTC
             LocalDateTime scheduledTimeUTC = convertToUTC(userLocalTime, timeZone);
-            LocalDateTime nowUTC = LocalDateTime.now();
 
-            // Создаем и сохраняем задачу
+            // Проверка на прошедшее время (только для не-yearly или если в этом году)
+            if (!isYearly && scheduledTimeUTC.isBefore(LocalDateTime.now())) {
+                return "❌ Нельзя создать напоминание на прошедшее время!";
+            }
+
+            // Сохраняем задачу
             NotificationTask task = createAndSaveTask(chatId, notificationText, scheduledTimeUTC, timeZone);
 
-            // Форматируем ответ для пользователя (показываем в его часовом поясе)
-            String formattedTime = userLocalTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
-            return String.format("✅ Напоминание сохранено!\n" +
-                            "📅 Когда: %s (по вашему часовому поясу)\n" +
-                            "📝 Текст: %s\n" +
-                            "🆔 ID задачи: %d",
-                    formattedTime, notificationText, task.getId());
+            // Дополнительно сохраняем признак ежегодности (нужно добавить поле в NotificationTask)
+            if (isYearly) {
+                task.setIsYearly(true);
+                task.setYearlyDay(dayMonth[0]);
+                task.setYearlyMonth(dayMonth[1]);
+                task.setYearlyTime(timePart);
+                repository.save(task);
+            }
 
-        } catch (DateTimeParseException e) {
-            logger.error("Failed to parse date/time from message: {}", messageText, e);
-            return "❌ Не удалось распознать дату и время.\n\n" +
-                    "Используйте формат: ДД.ММ.ГГГГ ЧЧ:MM Текст\n" +
-                    "Например: 20.05.2026 14:30 Позвонить маме";
+            String formattedTime = userLocalTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
+            String yearlyInfo = isYearly ? "\n🔄 Повтор: ежегодно" : "";
+
+            return String.format("✅ Напоминание сохранено!%s\n📅 Когда: %s (по вашему часовому поясу)\n📝 Текст: %s\n🆔 ID задачи: %d",
+                    yearlyInfo, formattedTime, notificationText, task.getId());
+
         } catch (Exception e) {
-            logger.error("Error processing message: {}", messageText, e);
-            return "❌ Произошла ошибка при сохранении напоминания. Попробуйте еще раз.";
+            logger.error("Error creating notification: {}", messageText, e);
+            return "❌ Ошибка при создании напоминания. Проверьте формат:\n" +
+                    "• 20.05.2026 14:30 Текст\n" +
+                    "• 20.05 Текст (ежегодно в 09:00)\n" +
+                    "• 20.05 14:30 Текст (ежегодно)";
         }
     }
-
+    /**
+     * Конвертирует локальное время пользователя в UTC
+         private LocalDateTime convertToUTC(LocalDateTime userLocalTime, String timeZone) {
+        ZonedDateTime userZonedTime = userLocalTime.atZone(ZoneId.of(timeZone));
+        ZonedDateTime utcTime = userZonedTime.withZoneSameInstant(ZoneId.of("UTC"));
+        return utcTime.toLocalDateTime();
+    }
+*/
     /**
      * Парсит строки даты и времени в LocalDateTime
      */
@@ -191,7 +235,7 @@ public class NotificationProcessingService {
     /**
      * Конвертирует локальное время пользователя в UTC
      */
-    private LocalDateTime convertToUTC(LocalDateTime userLocalTime, String timeZone) {
+    LocalDateTime convertToUTC(LocalDateTime userLocalTime, String timeZone) {
         // Важно: userLocalTime - это время, которое указал пользователь в своем часовом поясе
         // Но без привязки к конкретной дате, LocalDateTime не знает о часовом поясе
         // Поэтому мы создаем ZonedDateTime с указанием, что это время в часовом поясе пользователя
@@ -210,11 +254,117 @@ public class NotificationProcessingService {
     }
 
     /**
-     * Конвертирует UTC время в локальное время пользователя (для отображения)
+     * Удаляет напоминание по ID
+     * @param taskId ID задачи
+     * @param chatId ID чата (для проверки прав)
+     * @return результат операции
      */
-    public LocalDateTime convertToUserTime(LocalDateTime utcTime, String timeZone) {
+    public String deleteNotification(Long taskId, Long chatId) {
+        try {
+            Optional<NotificationTask> taskOpt = repository.findById(taskId);
+
+            if (taskOpt.isEmpty()) {
+                return "❌ Напоминание с ID " + taskId + " не найдено.";
+            }
+
+            NotificationTask task = taskOpt.get();
+
+            // Проверяем, что задача принадлежит этому пользователю
+            if (!task.getChatId().equals(chatId)) {
+                return "❌ У вас нет прав для удаления этого напоминания.";
+            }
+
+            // Проверяем статус (нельзя удалить уже отправленное)
+            if ("SENT".equals(task.getStatus())) {
+                return "❌ Это напоминание уже было отправлено и не может быть удалено.";
+            }
+
+            // Сохраняем информацию для ответа
+            String taskInfo = formatTaskInfo(task);
+
+            // Удаляем
+            repository.delete(task);
+
+            logger.info("User {} deleted notification task {}", chatId, taskId);
+            return "✅ Напоминание удалено:\n" + taskInfo;
+
+        } catch (Exception e) {
+            logger.error("Error deleting notification {}", taskId, e);
+            return "❌ Ошибка при удалении напоминания. Попробуйте позже.";
+        }
+    }
+
+    /**
+     * Форматирует информацию о задаче для вывода
+     */
+    private String formatTaskInfo(NotificationTask task) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("📝 Текст: ").append(task.getMessageText()).append("\n");
+
+        // Конвертируем время в часовой пояс пользователя
+        String userTimeZone = "Europe/Moscow"; // по умолчанию
+        try {
+            User user = userService.getUserByChatId(task.getChatId());
+            if (user != null && user.getTimeZone() != null) {
+                userTimeZone = user.getTimeZone();
+            }
+        } catch (Exception e) {
+            // игнорируем
+        }
+
+        LocalDateTime userTime = convertToUserTime(task.getScheduledTime(), userTimeZone);
+        sb.append("📅 Время: ").append(userTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")));
+
+        if (task.getIsYearly()) {
+            sb.append(" (ежегодно)");
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * Конвертирует UTC время в локальное время пользователя
+     */
+    private LocalDateTime convertToUserTime(LocalDateTime utcTime, String timeZone) {
         ZonedDateTime utcZoned = utcTime.atZone(ZoneId.of("UTC"));
         ZonedDateTime userZoned = utcZoned.withZoneSameInstant(ZoneId.of(timeZone));
         return userZoned.toLocalDateTime();
+    }
+
+    /**
+     * Получает список активных напоминаний пользователя
+     */
+    public String listNotifications(Long chatId) {
+        List<NotificationTask> tasks = repository.findByChatIdAndStatus(chatId, "SCHEDULED");
+
+        if (tasks.isEmpty()) {
+            return "📭 У вас нет активных напоминаний.";
+        }
+
+        StringBuilder sb = new StringBuilder("📋 Ваши активные напоминания:\n\n");
+        String userTimeZone = userService.getUserTimeZone(chatId);
+
+        for (NotificationTask task : tasks) {
+            LocalDateTime userTime = convertToUserTime(task.getScheduledTime(), userTimeZone);
+            sb.append("🆔 ID: ").append(task.getId()).append("\n");
+            sb.append("📝 ").append(task.getMessageText()).append("\n");
+            sb.append("📅 ").append(userTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")));
+
+            if (task.getIsYearly()) {
+                sb.append(" 🔄 ежегодно");
+            }
+
+            sb.append("\n\n");
+        }
+
+        sb.append("Для удаления отправьте: /delete ID");
+        return sb.toString();
+    }
+    public int deleteAllNotifications(Long chatId) {
+        List<NotificationTask> tasks = repository.findByChatIdAndStatus(chatId, "SCHEDULED");
+        int count = tasks.size();
+        repository.deleteAll(tasks);
+        logger.info("User {} deleted all {} notifications", chatId, count);
+        return count;
     }
 }
