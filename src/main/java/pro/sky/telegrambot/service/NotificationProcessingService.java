@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import pro.sky.telegrambot.model.NotificationTask;
+import pro.sky.telegrambot.model.User;
 import pro.sky.telegrambot.repository.NotificationTaskRepository;
 
 import java.time.LocalDateTime;
@@ -11,6 +12,8 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.List;
+import java.util.Optional;
 
 @Service
 public class NotificationProcessingService {
@@ -251,11 +254,117 @@ public class NotificationProcessingService {
     }
 
     /**
-     * Конвертирует UTC время в локальное время пользователя (для отображения)
+     * Удаляет напоминание по ID
+     * @param taskId ID задачи
+     * @param chatId ID чата (для проверки прав)
+     * @return результат операции
      */
-    public LocalDateTime convertToUserTime(LocalDateTime utcTime, String timeZone) {
+    public String deleteNotification(Long taskId, Long chatId) {
+        try {
+            Optional<NotificationTask> taskOpt = repository.findById(taskId);
+
+            if (taskOpt.isEmpty()) {
+                return "❌ Напоминание с ID " + taskId + " не найдено.";
+            }
+
+            NotificationTask task = taskOpt.get();
+
+            // Проверяем, что задача принадлежит этому пользователю
+            if (!task.getChatId().equals(chatId)) {
+                return "❌ У вас нет прав для удаления этого напоминания.";
+            }
+
+            // Проверяем статус (нельзя удалить уже отправленное)
+            if ("SENT".equals(task.getStatus())) {
+                return "❌ Это напоминание уже было отправлено и не может быть удалено.";
+            }
+
+            // Сохраняем информацию для ответа
+            String taskInfo = formatTaskInfo(task);
+
+            // Удаляем
+            repository.delete(task);
+
+            logger.info("User {} deleted notification task {}", chatId, taskId);
+            return "✅ Напоминание удалено:\n" + taskInfo;
+
+        } catch (Exception e) {
+            logger.error("Error deleting notification {}", taskId, e);
+            return "❌ Ошибка при удалении напоминания. Попробуйте позже.";
+        }
+    }
+
+    /**
+     * Форматирует информацию о задаче для вывода
+     */
+    private String formatTaskInfo(NotificationTask task) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("📝 Текст: ").append(task.getMessageText()).append("\n");
+
+        // Конвертируем время в часовой пояс пользователя
+        String userTimeZone = "Europe/Moscow"; // по умолчанию
+        try {
+            User user = userService.getUserByChatId(task.getChatId());
+            if (user != null && user.getTimeZone() != null) {
+                userTimeZone = user.getTimeZone();
+            }
+        } catch (Exception e) {
+            // игнорируем
+        }
+
+        LocalDateTime userTime = convertToUserTime(task.getScheduledTime(), userTimeZone);
+        sb.append("📅 Время: ").append(userTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")));
+
+        if (task.getIsYearly()) {
+            sb.append(" (ежегодно)");
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * Конвертирует UTC время в локальное время пользователя
+     */
+    private LocalDateTime convertToUserTime(LocalDateTime utcTime, String timeZone) {
         ZonedDateTime utcZoned = utcTime.atZone(ZoneId.of("UTC"));
         ZonedDateTime userZoned = utcZoned.withZoneSameInstant(ZoneId.of(timeZone));
         return userZoned.toLocalDateTime();
+    }
+
+    /**
+     * Получает список активных напоминаний пользователя
+     */
+    public String listNotifications(Long chatId) {
+        List<NotificationTask> tasks = repository.findByChatIdAndStatus(chatId, "SCHEDULED");
+
+        if (tasks.isEmpty()) {
+            return "📭 У вас нет активных напоминаний.";
+        }
+
+        StringBuilder sb = new StringBuilder("📋 Ваши активные напоминания:\n\n");
+        String userTimeZone = userService.getUserTimeZone(chatId);
+
+        for (NotificationTask task : tasks) {
+            LocalDateTime userTime = convertToUserTime(task.getScheduledTime(), userTimeZone);
+            sb.append("🆔 ID: ").append(task.getId()).append("\n");
+            sb.append("📝 ").append(task.getMessageText()).append("\n");
+            sb.append("📅 ").append(userTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")));
+
+            if (task.getIsYearly()) {
+                sb.append(" 🔄 ежегодно");
+            }
+
+            sb.append("\n\n");
+        }
+
+        sb.append("Для удаления отправьте: /delete ID");
+        return sb.toString();
+    }
+    public int deleteAllNotifications(Long chatId) {
+        List<NotificationTask> tasks = repository.findByChatIdAndStatus(chatId, "SCHEDULED");
+        int count = tasks.size();
+        repository.deleteAll(tasks);
+        logger.info("User {} deleted all {} notifications", chatId, count);
+        return count;
     }
 }

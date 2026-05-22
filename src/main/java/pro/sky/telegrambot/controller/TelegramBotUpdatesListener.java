@@ -207,12 +207,18 @@ public class TelegramBotUpdatesListener {
                 break;
 
             case "/help":
-                sendMessage(chatId, "📝 Команды:\n" +
+                sendMessage(chatId, "📝 Команды бота:\n\n" +
                         "/start - начать работу\n" +
                         "/help - эта справка\n" +
-                        "/timezone - узнать текущий часовой пояс\n" +
+                        "/timezone - узнать часовой пояс\n" +
                         "/settimezone - изменить часовой пояс\n" +
-                        "/myzones - показать время в разных часовых поясах");
+                        "/mytasks - список моих напоминаний\n" +
+                        "/delete ID - удалить напоминание\n" +
+                        "/myprofile - информация о профиле\n\n" +
+                        "📅 Создание напоминаний:\n" +
+                        "• 20.05.2026 14:30 Текст (однократное)\n" +
+                        "• 20.05 Текст (ежегодно в 09:00)\n" +
+                        "• 20.05 14:30 Текст (ежегодно)");
                 break;
 
             case "/timezone":
@@ -242,6 +248,19 @@ public class TelegramBotUpdatesListener {
                 } else {
                     sendMessage(chatId, "❌ Профиль не найден");
                 }
+                break;
+            // В методе handleCommand добавьте новые case'ы:
+            case "/delete":
+                handleDeleteCommand(chatId, command);
+                break;
+
+            case "/mytasks":
+                String tasksList = notificationProcessingService.listNotifications(chatId);
+                sendMessage(chatId, tasksList);
+                break;
+            case "/deleteall":
+                int deleted = notificationProcessingService.deleteAllNotifications(chatId);
+                sendMessage(chatId, "✅ Удалено " + deleted + " напоминаний.");
                 break;
 
             default:
@@ -304,5 +323,25 @@ public class TelegramBotUpdatesListener {
 
     public void sendNotification(long chatId, String messageText) {
         sendMessage(chatId, "🔔 НАПОМИНАНИЕ 🔔\n\n" + messageText);
+    }
+    /**
+     * Обрабатывает команду удаления /delete <id>
+     */
+    private void handleDeleteCommand(Long chatId, String command) {
+        String[] parts = command.split(" ");
+
+        if (parts.length != 2) {
+            sendMessage(chatId, "❌ Используйте: /delete ID_напоминания\n\n" +
+                    "Чтобы узнать ID, отправьте /mytasks");
+            return;
+        }
+
+        try {
+            Long taskId = Long.parseLong(parts[1]);
+            String result = notificationProcessingService.deleteNotification(taskId, chatId);
+            sendMessage(chatId, result);
+        } catch (NumberFormatException e) {
+            sendMessage(chatId, "❌ ID должен быть числом.\nПример: /delete 42");
+        }
     }
 }
