@@ -73,6 +73,7 @@ public class TelegramBotUpdatesListener {
         try {
             if (update.message() != null && update.message().text() != null) {
                 Long chatId = update.message().chat().id();
+                Long userId = update.message().from().id();  // ← ID пользователя
                 String username = update.message().from().username();
                 String messageText = update.message().text();
 
@@ -85,21 +86,39 @@ public class TelegramBotUpdatesListener {
                 logger.info("Received message: '{}' from chat: {} (isGroup: {})",
                         messageText, chatId, isGroup);
 
-                // Если это группа — обрабатываем как групповое напоминание
+                // === ОБРАБОТКА ГРУППОВЫХ СООБЩЕНИЙ ===
                 if (isGroup) {
-                    // Игнорируем команды типа /start в группе
+                    // Игнорируем команды в группе
                     if (messageText.startsWith("/")) {
                         return;
                     }
 
-                    // Обрабатываем групповое сообщение
-                    String response = notificationProcessingService.processGroupMessage(messageText, chatId, username);
+                    // Получаем часовой пояс пользователя (если есть)
+                    String userTimeZone = "Europe/Moscow";  // значение по умолчанию
+                    try {
+                        // Пытаемся получить часовой пояс пользователя по его ID
+                        User user = userService.getUserByChatId(userId);
+                        if (user != null && user.getTimeZone() != null && !user.getTimeZone().isEmpty()) {
+                            userTimeZone = user.getTimeZone();
+                            logger.info("User timezone for {}: {}", username, userTimeZone);
+                        } else {
+                            logger.info("User {} has no timezone set, using default", username);
+                        }
+                    } catch (Exception e) {
+                        logger.warn("Could not get user timezone for {}: {}", username, e.getMessage());
+                    }
+
+                    // Обрабатываем групповое сообщение с передачей часового пояса
+                    String response = notificationProcessingService.processGroupMessage(messageText, chatId, username, userTimeZone); // ← передаём часовой пояс
+
+
                     if (response != null && !response.isEmpty()) {
                         sendMessage(chatId, response);
                     }
                     return;
                 }
 
+                // === ЛИЧНЫЕ СООБЩЕНИЯ ===
                 // Проверяем, ожидаем ли мы ответ о часовом поясе
                 if (waitingForTimeZone.containsKey(chatId) && waitingForTimeZone.get(chatId)) {
                     handleTimeZoneResponse(chatId, messageText, username);

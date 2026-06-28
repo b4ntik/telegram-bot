@@ -375,42 +375,52 @@ public class NotificationProcessingService {
      * Формат: ДД.ММ ЧЧ:MM Текст напоминания
      * Пример: 29.06 15:00 Идем на день рождения бабушки
      */
-    public String processGroupMessage(String messageText, Long chatId, String senderUsername) {
-        logger.info("Processing group message: '{}' from chat: {}", messageText, chatId);
+    public String processGroupMessage(String messageText, Long chatId, String senderUsername, String userTimeZone) {
+        logger.info("Processing group message: '{}' from chat: {}, user timezone: {}", messageText, chatId, userTimeZone);
+
+        // Валидация часового пояса
+        String timeZone = userTimeZone;
+        if (timeZone == null || timeZone.isEmpty()) {
+            timeZone = "Europe/Moscow";
+            logger.warn("User timezone is null or empty, using default: Europe/Moscow");
+        }
+
+        // Проверяем, что пояс валидный
+        try {
+            ZoneId.of(timeZone);
+        } catch (Exception e) {
+            timeZone = "Europe/Moscow";
+            logger.warn("Invalid timezone '{}', using Europe/Moscow", userTimeZone);
+        }
 
         if (messageText == null || messageText.trim().isEmpty()) {
             return null;
         }
 
-        // Если сообщение начинается с команды — игнорируем
         if (messageText.startsWith("/")) {
             return null;
         }
 
-        // Проверяем формат: ДД.ММ ЧЧ:MM Текст или ДД.ММ Текст
         Pattern pattern = Pattern.compile("(\\d{2}\\.\\d{2})(?:\\s+(\\d{2}:\\d{2}))?\\s+(.+)");
         Matcher matcher = pattern.matcher(messageText.trim());
 
         if (!matcher.matches()) {
-            // Не соответствует формату — игнорируем
             return null;
         }
 
-        String datePart = matcher.group(1);      // ДД.ММ
-        String timePart = matcher.group(2);      // ЧЧ:MM (опционально)
-        String reminderText = matcher.group(3);  // Текст
+        String datePart = matcher.group(1);
+        String timePart = matcher.group(2);
+        String reminderText = matcher.group(3);
 
-        // Если время не указано — ставим 09:00
         if (timePart == null) {
             timePart = "09:00";
         }
 
         try {
-            // Текущая дата в часовом поясе Europe/Moscow (или системном)
-            ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Europe/Moscow"));
+            // ✅ ИСПРАВЛЕНО: используем timeZone вместо жесткого Europe/Moscow
+            ZonedDateTime now = ZonedDateTime.now(ZoneId.of(timeZone));
             int currentYear = now.getYear();
 
-            // Парсим день и месяц
             String[] dayMonth = datePart.split("\\.");
             int day = Integer.parseInt(dayMonth[0]);
             int month = Integer.parseInt(dayMonth[1]);
@@ -418,30 +428,27 @@ public class NotificationProcessingService {
             int hour = Integer.parseInt(hoursMinutes[0]);
             int minute = Integer.parseInt(hoursMinutes[1]);
 
-            // Создаём дату в часовом поясе группы (Europe/Moscow)
-            LocalDateTime groupLocalTime = LocalDateTime.of(
-                    currentYear, month, day, hour, minute
-            );
+            // ✅ ИСПРАВЛЕНО: используем timeZone
+            LocalDateTime groupLocalTime = LocalDateTime.of(currentYear, month, day, hour, minute);
 
-            // Если дата уже прошла — переносим на следующий год
             if (groupLocalTime.isBefore(now.toLocalDateTime())) {
                 groupLocalTime = groupLocalTime.plusYears(1);
             }
 
-            // Конвертируем в UTC для хранения
-            ZonedDateTime groupZonedTime = groupLocalTime.atZone(ZoneId.of("Europe/Moscow"));
+            // ✅ ИСПРАВЛЕНО: используем timeZone
+            ZonedDateTime groupZonedTime = groupLocalTime.atZone(ZoneId.of(timeZone));
             ZonedDateTime utcTime = groupZonedTime.withZoneSameInstant(ZoneId.of("UTC"));
             LocalDateTime scheduledTimeUTC = utcTime.toLocalDateTime();
 
-            // Создаём задачу
+            // ✅ ИСПРАВЛЕНО: используем timeZone
             NotificationTask task = new NotificationTask();
-            task.setChatId(chatId);  // ← ID группы
+            task.setChatId(chatId);
             task.setMessageText(reminderText);
             task.setScheduledTime(scheduledTimeUTC);
-            task.setTimeZone("Europe/Moscow");
+            task.setTimeZone(timeZone);  // ← сохранён в БД
             task.setStatus("SCHEDULED");
             task.setCreatedAt(LocalDateTime.now());
-            task.setIsYearly(true);  // Ежегодное
+            task.setIsYearly(true);
             task.setYearlyDay(String.valueOf(day));
             task.setYearlyMonth(String.valueOf(month));
             task.setYearlyTime(timePart);
@@ -450,11 +457,11 @@ public class NotificationProcessingService {
 
             String formattedTime = groupLocalTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
             return String.format("✅ Напоминание для группы сохранено!\n" +
-                            "📅 Когда: %s\n" +
+                            "📅 Когда: %s (%s)\n" +  // ← добавили часовой пояс в ответ
                             "📝 Текст: %s\n" +
                             "🔄 Повтор: ежегодно\n" +
                             "Автор: @%s",
-                    formattedTime, reminderText, senderUsername);
+                    formattedTime, timeZone, reminderText, senderUsername);
 
         } catch (Exception e) {
             logger.error("Failed to parse group message: {}", messageText, e);
@@ -462,6 +469,7 @@ public class NotificationProcessingService {
                     "Используйте: ДД.ММ ЧЧ:MM Текст напоминания\n" +
                     "Пример: 29.06 15:00 Идем на день рождения бабушки";
         }
+
     }
 
 }
