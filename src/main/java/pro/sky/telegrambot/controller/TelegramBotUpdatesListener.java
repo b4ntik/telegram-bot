@@ -1,5 +1,6 @@
 package pro.sky.telegrambot.controller;
 
+import com.pengrad.telegrambot.model.Chat;
 import pro.sky.telegrambot.model.User;
 import com.pengrad.telegrambot.TelegramBot;
 import com.pengrad.telegrambot.UpdatesListener;
@@ -76,6 +77,28 @@ public class TelegramBotUpdatesListener {
                 String messageText = update.message().text();
 
                 logger.info("Received message: '{}' from chat: {}", messageText, chatId);
+
+                // Проверяем, группа это или личный чат
+                boolean isGroup = update.message().chat().type() == Chat.Type.group ||
+                        update.message().chat().type() == Chat.Type.supergroup;
+
+                logger.info("Received message: '{}' from chat: {} (isGroup: {})",
+                        messageText, chatId, isGroup);
+
+                // Если это группа — обрабатываем как групповое напоминание
+                if (isGroup) {
+                    // Игнорируем команды типа /start в группе
+                    if (messageText.startsWith("/")) {
+                        return;
+                    }
+
+                    // Обрабатываем групповое сообщение
+                    String response = notificationProcessingService.processGroupMessage(messageText, chatId, username);
+                    if (response != null && !response.isEmpty()) {
+                        sendMessage(chatId, response);
+                    }
+                    return;
+                }
 
                 // Проверяем, ожидаем ли мы ответ о часовом поясе
                 if (waitingForTimeZone.containsKey(chatId) && waitingForTimeZone.get(chatId)) {
